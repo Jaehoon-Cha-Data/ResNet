@@ -54,21 +54,21 @@ class ResNet(object):
 
 
     def Forward(self):
-        self.x = Augmentation(self.x, self.training)
+        self.aug = Augmentation(self.x, self.training)
         self.conv1 = tf.layers.conv2d(
-          inputs=self.x, filters=self.num_outputs, kernel_size=self.kernel_size,
+          inputs=self.aug, filters=self.num_outputs, kernel_size=self.kernel_size,
           strides=self.conv_stride, padding = 'SAME', name = 'conv1')
 
         with tf.name_scope('res_con_output'):
             self.res_con = self.Connect_blocks(self.conv1)
 
-        self.res_con = Batch_norm(self.res_con, self.training)
-        self.res_con = tf.nn.relu(self.res_con)
+        self.batch_norm1 = Batch_norm(self.res_con, self.training)
+        self.relu1 = tf.nn.relu(self.batch_norm1)
     
         # The current top layer has shape
         # `batch_size x pool_size x pool_size x final_size`.
         with tf.name_scope('mean_pool_output'):
-            self.pool = tf.reduce_mean(self.res_con, [1, 2], keepdims=True)
+            self.pool = tf.reduce_mean(self.relu1, [1, 2], keepdims=True)
         
         self.reshape = tf.reshape(self.pool, [-1, self.final_size])
 
