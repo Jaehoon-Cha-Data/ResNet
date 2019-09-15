@@ -38,8 +38,8 @@ def parse_args():
     parser.add_argument('--num_outputs', type = int, default = 16)
     parser.add_argument('--kernel_size', type = int, default = 3)
     parser.add_argument('--conv_stride', type = int, default = 1)
-    parser.add_argument('--block_sizes', type = list, default = [4,4,4])
-    parser.add_argument('--block_strides', type = list, default = [1,2,2])
+    parser.add_argument('--block_sizes', type = list, default = [3,4,6,3])
+    parser.add_argument('--block_strides', type = list, default = [1,2,2,2])
 
     args = parser.parse_args()
     
@@ -106,6 +106,10 @@ for lr in lr_sets:
     writer = tf.summary.FileWriter(writer_save_name)
     
     
+    train_loss_set = []
+    train_acc_set = []
+    test_loss_set = []
+    test_acc_set = []    
     with tf.Session() as sess:    
         saver = tf.train.Saver()
         sess.run(tf.global_variables_initializer())
@@ -141,7 +145,9 @@ for lr in lr_sets:
             print('Epoch ', epoch, '{:.2f}%'.format(100*(iter_in_epoch+1)/int(iter_per_epoch)),
                   'completed out of ', config['epochs'], 'loss: ', epoch_loss/int(iter_per_epoch),
                   'acc: ', '{:.2f}%'.format(epoch_acc*100/int(iter_per_epoch)))
-            
+
+            train_loss_set.append(epoch_loss/int(iter_per_epoch))
+            train_acc_set.append(epoch_acc*100/int(iter_per_epoch))            
             test_loss = 0.
             test_acc = 0.
             for iter_in_epoch in range(int(iter_per_test_epoch)):            
@@ -154,6 +160,22 @@ for lr in lr_sets:
             print('Epoch ', epoch,  'loss: ', test_loss/int(iter_per_test_epoch), 
                   'acc: ', '{:.2f}%'.format(test_acc*100/int(iter_per_test_epoch)))
             print('###################### \n')     
+            test_loss_set.append(test_loss/int(iter_per_test_epoch))
+            test_acc_set.append(test_acc*100/int(iter_per_test_epoch))
     
+            if epoch % 50 == 0:
+                saver.save(sess, model_save_name, global_step=epoch)    
     
+    path_name = os.path.join(folder_name, config['model_name']+f'_{lr}')
+         
+
+    with open(path_name+"_train_loss.txt", "wb") as f:    #Pickling
+        pickle.dump(train_loss_set, f) 
+    with open(path_name+"_test_loss.txt", "wb") as f:    #Pickling
+        pickle.dump(test_loss_set, f) 
+    with open(path_name+"_train_acc.txt", "wb") as f:    #Pickling
+        pickle.dump(train_acc_set, f) 
+    with open(path_name+"_test_acc.txt", "wb") as f:    #Pickling
+        pickle.dump(test_acc_set, f) 
+            
               
