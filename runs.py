@@ -11,6 +11,7 @@ resnet runs
 import tensorflow as tf
 from cifar10 import Cifar10
 from collections import OrderedDict
+from networks import cycle_lr
 import argparse
 import os
 import numpy as np
@@ -18,21 +19,17 @@ from models import ResNet
 np.random.seed(0)
 tf.set_random_seed(0)
 
-
 def parse_args():
     parser = argparse.ArgumentParser()
     # optim config
     parser.add_argument('--model_name', type=str, default = 'ResNet')
     parser.add_argument('--datasets', type = str, default = 'CIFAR10')
-    parser.add_argument('--epochs', type=int, default=1000)
+    parser.add_argument('--epochs', type=int, default=400)
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--base_lr', type=float, default=0.01)
-    parser.add_argument('--lr_sets', type = list, default = [0.01,
-                                                             0.005,
-                                                             0.001,
-                                                                    5*1e-4,
-                                                                    1e-4,
-                                                                    5*1e-5])    
+    parser.add_argument('--base_lr', type = float, default = 0.01)
+    parser.add_argument('--max_lr', type = float, default = 0.2)
+    parser.add_argument('--cycle_epoch', type = int, default = 20)
+    parser.add_argument('--cycle_ratio', type = float, default = 0.7)
     parser.add_argument('--bottleneck', type = bool, default = False)
     parser.add_argument('--num_classes', type = int, default = 10)
     parser.add_argument('--num_outputs', type = int, default = 16)
@@ -49,7 +46,9 @@ def parse_args():
         ('epochs', args.epochs),
         ('batch_size', args.batch_size),
         ('base_lr', args.base_lr),
-        ('lr_sets', args.lr_sets),
+        ('max_lr', args.max_lr),
+        ('cycle_epoch', args.cycle_epoch),
+        ('cycle_ratio', args.cycle_ratio),
         ('bottleneck', args.bottleneck),
         ('num_classes', args.num_classes),
         ('num_outputs', args.num_outputs),
@@ -85,97 +84,75 @@ except OSError:
 ### outputs ###
 pred, loss = model.Forward()
 
-#lr = config['base_lr']
+iter_per_epoch = int(n_samples/config['batch_size']) 
 
-lr_sets = config['lr_sets']
 
-for lr in lr_sets:
-    folder_name = os.path.join(mother_folder, config['model_name']+'_'+config['datasets']+f'_{lr}')
+### cyclic learning rate ###
+Lr = cycle_lr(config['base_lr'], config['max_lr'], iter_per_epoch, 
+              config['cycle_epoch'], config['cycle_ratio'], config['epochs'])
+
+cy_lr = tf.placeholder(tf.float32, shape=(),  name = "cy_lr")
+
+
+### run ###
+folder_name = os.path.join(mother_folder, config['model_name']+'_'+config['datasets'])
+
+
+with tf.name_scope('train'):
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=cy_lr).minimize(loss)
+
+prediction = tf.argmax(pred, 1)
+correct_prediction = tf.equal(prediction, tf.argmax(model.y, 1))
+accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name = 'accuracy')
+tf.summary.scalar('accuracy', accuracy)
+
+
+with tf.Session() as sess:    
+    sess.run(tf.global_variables_initializer())
     
-    with tf.name_scope('train'):
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate=lr).minimize(loss)
+    try:
+        os.mkdir(folder_name)
+    except OSError:
+        pass    
     
-    prediction = tf.argmax(pred, 1)
-    correct_prediction = tf.equal(prediction, tf.argmax(model.y, 1))
-    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name = 'accuracy')
-    tf.summary.scalar('accuracy', accuracy)
-    
-    summ = tf.summary.merge_all()
+    iteration = 0
+    iter_per_test_epoch = n_test_samples/config['batch_size'] 
+    for epoch in range(config['epochs']):
+        epoch_loss = 0.
+        epoch_acc = 0.
+        for iter_in_epoch in range(iter_per_epoch):
+            epoch_x, epoch_y = cifar10.next_train_batch(config['batch_size'])
+            _, c, acc = sess.run([optimizer, loss, accuracy], 
+                            feed_dict = {model.x: epoch_x, model.y: epoch_y, 
+                                         model.training:True, cy_lr: Lr[iteration]})
+            epoch_loss += c
+            epoch_acc += acc
+            iteration+=1
+            if iter_in_epoch%100 == 0:
+                print('Epoch ', epoch, '{:.2f}%'.format(100*(iter_in_epoch+1)/int(iter_per_epoch)),
+                      'completed out of ', config['epochs'], 'loss: ', epoch_loss/(iter_in_epoch+1),
+                      'acc: ', '{:.2f}%'.format(epoch_acc*100/(iter_in_epoch+1)))
+        print('######################')        
+        print('TRAIN')        
+        print('Epoch ', epoch, '{:.2f}%'.format(100*(iter_in_epoch+1)/int(iter_per_epoch)),
+              'completed out of ', config['epochs'], 'loss: ', epoch_loss/int(iter_per_epoch),
+              'acc: ', '{:.2f}%'.format(epoch_acc*100/int(iter_per_epoch)))
         
-    writer_save_name = os.path.join('log', folder_name+'aug')
-    writer = tf.summary.FileWriter(writer_save_name)
-    
-    
-    train_loss_set = []
-    train_acc_set = []
-    test_loss_set = []
-    test_acc_set = []    
-    with tf.Session() as sess:    
-        saver = tf.train.Saver()
-        sess.run(tf.global_variables_initializer())
-        writer.add_graph(sess.graph)
-    
-        model_save_name = os.path.join(folder_name, config['model_name']+f'_{lr}'+'.ckpt')
+        test_loss = 0.
+        test_acc = 0.
+        for iter_in_epoch in range(int(iter_per_test_epoch)):            
+            epoch_x, epoch_y = cifar10.next_test_batch(config['batch_size'])  
+            c, acc = sess.run([loss, accuracy], 
+                              feed_dict = {model.x: epoch_x, model.y: epoch_y, 
+                                           model.training:False, cy_lr: Lr[iteration]})
+            test_loss += c
+            test_acc += acc
+        print('TEST')        
+        print('Epoch ', epoch,  'loss: ', test_loss/int(iter_per_test_epoch), 
+              'acc: ', '{:.2f}%'.format(test_acc*100/int(iter_per_test_epoch)))
+        print('###################### \n')     
         
-        try:
-            os.mkdir(folder_name)
-        except OSError:
-            pass    
-        
-        iteration = 0
-        iter_per_epoch = n_samples/config['batch_size'] 
-        iter_per_test_epoch = n_test_samples/config['batch_size'] 
-        for epoch in range(config['epochs']):
-            epoch_loss = 0.
-            epoch_acc = 0.
-            for iter_in_epoch in range(int(iter_per_epoch)):
-                epoch_x, epoch_y = cifar10.next_train_batch(config['batch_size'])
-                _, c, acc, s = sess.run([optimizer, loss, accuracy, summ], 
-                                feed_dict = {model.x: epoch_x, model.y: epoch_y, model.training:True})
-                writer.add_summary(s, global_step=iteration)
-                epoch_loss += c
-                epoch_acc += acc
-                iteration+=1
-                if iter_in_epoch%100 == 0:
-                    print('Epoch ', epoch, '{:.2f}%'.format(100*(iter_in_epoch+1)/int(iter_per_epoch)),
-                          'completed out of ', config['epochs'], 'loss: ', epoch_loss/(iter_in_epoch+1),
-                          'acc: ', '{:.2f}%'.format(epoch_acc*100/(iter_in_epoch+1)))
-            print('######################')        
-            print('TRAIN')        
-            print('Epoch ', epoch, '{:.2f}%'.format(100*(iter_in_epoch+1)/int(iter_per_epoch)),
-                  'completed out of ', config['epochs'], 'loss: ', epoch_loss/int(iter_per_epoch),
-                  'acc: ', '{:.2f}%'.format(epoch_acc*100/int(iter_per_epoch)))
 
-            train_loss_set.append(epoch_loss/int(iter_per_epoch))
-            train_acc_set.append(epoch_acc*100/int(iter_per_epoch))            
-            test_loss = 0.
-            test_acc = 0.
-            for iter_in_epoch in range(int(iter_per_test_epoch)):            
-                epoch_x, epoch_y = cifar10.next_test_batch(config['batch_size'])  
-                c, acc = sess.run([loss, accuracy], 
-                                  feed_dict = {model.x: epoch_x, model.y: epoch_y, model.training:False})
-                test_loss += c
-                test_acc += acc
-            print('TEST')        
-            print('Epoch ', epoch,  'loss: ', test_loss/int(iter_per_test_epoch), 
-                  'acc: ', '{:.2f}%'.format(test_acc*100/int(iter_per_test_epoch)))
-            print('###################### \n')     
-            test_loss_set.append(test_loss/int(iter_per_test_epoch))
-            test_acc_set.append(test_acc*100/int(iter_per_test_epoch))
-    
-            if epoch % 50 == 0:
-                saver.save(sess, model_save_name, global_step=epoch)    
-    
-    path_name = os.path.join(folder_name, config['model_name']+f'_{lr}')
-         
 
-    with open(path_name+"_train_loss.txt", "wb") as f:    #Pickling
-        pickle.dump(train_loss_set, f) 
-    with open(path_name+"_test_loss.txt", "wb") as f:    #Pickling
-        pickle.dump(test_loss_set, f) 
-    with open(path_name+"_train_acc.txt", "wb") as f:    #Pickling
-        pickle.dump(train_acc_set, f) 
-    with open(path_name+"_test_acc.txt", "wb") as f:    #Pickling
-        pickle.dump(test_acc_set, f) 
-            
-              
+   
+

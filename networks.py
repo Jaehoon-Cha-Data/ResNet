@@ -9,6 +9,28 @@ Created on Fri Sep 13 23:43:20 2019
 import tensorflow as tf
 import numpy as np
 
+def cycle_fn(iteration, base_lr, max_lr, stepsize):
+    cycle = np.floor(1+iteration/(2*stepsize))
+    x = np.abs(iteration/stepsize - 2*cycle +1)
+    lr = base_lr + (max_lr - base_lr)*np.maximum(0, (1-x))
+    return np.float32(lr)
+
+
+def cycle_lr(base_lr, max_lr, iter_in_batch, epoch_for_cycle, ratio, total_epochs):
+    iteration = 0;
+    Lr = [];
+    stepsize = (iter_in_batch*epoch_for_cycle)/2.
+    for i in range(total_epochs):
+        for j in range(iter_in_batch):
+            Lr.append(cycle_fn(iteration, base_lr = base_lr, 
+                            max_lr = max_lr, stepsize = stepsize))
+            iteration+=1
+    final_iter = np.int((total_epochs/epoch_for_cycle)*stepsize*2*ratio)
+    Lr = np.array(Lr)
+    Lr[final_iter:] = base_lr
+    return Lr
+
+
 def Batch_norm(x, training):
     return tf.contrib.layers.batch_norm(inputs=x,
                                         decay=0.997, epsilon=1e-5,
@@ -126,8 +148,3 @@ class Block_layer(object):
             x = self.block_seq[i-1].Forward(x)
             
         return x
-
-
-def if_test(x, train):
-    x = tf.cond(train, lambda: x + 1, lambda: x)
-    return x
