@@ -6,6 +6,7 @@ https://github.com/bckenstler/CLR
 
 
 Epochs: 400 
+
 Final test accuracy: 93.96%
 
 <p float="left">
